@@ -1,0 +1,885 @@
+---
+title: "Caregiver Delay Discounting"
+author: "MASKED"
+date: "October 30, 2018"
+knit: (function(inputFile, encoding) { rmarkdown::render(inputFile, encoding = encoding, output_file = paste0(dirname(inputFile),'/README.md')) })
+output:
+  html_document:
+    keep_md: true
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      cache = TRUE,
+                      fig.path = "plots/",
+                      dev = c("png", "svg"),
+                      dpi = 500)
+
+library(nlme)
+library(lattice)
+library(dplyr)
+library(latticeExtra)
+library(tidyr)
+library(car)  
+library(knitr)
+library(gridExtra)
+library(Formula)
+library(Hmisc)
+
+mSurveyRes <- read.csv("Parent Decision Making Data.csv")
+
+# Colors for plots
+moneyColor <- rgb(red = 0,
+                  green = 255,
+                  blue = 127,
+                  alpha = 255,
+                  maxColorValue = 255)
+behaviorColor <- rgb(red = 255,
+                     green = 99,
+                     blue = 71,
+                     alpha = 255,
+                     maxColorValue = 255)
+moneyColorTrans <- rgb(red = 0,
+                       green = 255,
+                       blue = 127,
+                       alpha = 100,
+                       maxColorValue = 255)
+behaviorColorTrans <- rgb(red = 255,
+                          green = 99,
+                          blue = 71,
+                          alpha = 100,
+                          maxColorValue = 255)
+
+jbCriteria <- 20
+
+moneyTitration <- mSurveyRes %>%
+  select(c(ResponseID,SSR.Value.Money.1,SSR.Value.Money.2,
+           SSR.Value.Money.3,SSR.Value.Money.4,SSR.Value.Money.5,
+           SSR.Value.Money.6,SSR.Value.Money.7,SSR.Value.Money.8,
+           SSR.Value.Money.9,rateBehavior,n_Children))
+
+moneyTitration$grp <- 0
+
+#HACK
+incomeCap <- 120000
+
+{
+  #Cast id and delay values
+  colnames(moneyTitration) <- c("id", 7,14,30,60,90,180,270,365,730,"Rating","n_Children","grp")
+  
+  moneyTitration$JB1 <- TRUE
+  moneyTitration$JB2 <- TRUE
+  
+  for (id in unique(moneyTitration$id)) {
+    for (num in 3:10) {
+      prev = moneyTitration[moneyTitration$id == id, num - 1]
+      curr = moneyTitration[moneyTitration$id == id, num]
+      
+      if ((curr - prev) > jbCriteria) {
+        moneyTitration[moneyTitration$id == id, "JB1"] <- FALSE
+      }
+    }
+  }
+  
+  moneyTitration[moneyTitration$id == id, "JB2"] <- moneyTitration[moneyTitration$id == id, 2] <=
+    moneyTitration[moneyTitration$id == id, 10]
+  
+  moneyTitration.long <- filter(moneyTitration, JB1 == TRUE & JB2 == TRUE) %>%
+    select(-c(JB1, JB2)) %>%
+    gather(Delay, Indifference, colnames(moneyTitration)[2:10], factor_key=TRUE) %>%
+    mutate(Delay = as.numeric(as.character(Delay))) %>%
+    mutate(Indifference = as.numeric(Indifference)) %>%
+    as.data.frame()
+  
+  nMoneySystematic <- filter(moneyTitration, JB1 == TRUE) %>%
+    do(data.frame(nrow=nrow(.)))
+}
+
+behaviorTitration <- mSurveyRes %>%
+  select(c(ResponseID,SSR.Value.1,SSR.Value.2,
+           SSR.Value.3,SSR.Value.4,SSR.Value.5,
+           SSR.Value.6,SSR.Value.7,SSR.Value.8,
+           SSR.Value.9,rateBehavior,n_Children))
+
+behaviorTitration$grp <- 1
+
+{
+  colnames(behaviorTitration) <- c("id", 7,14,30,60,90,180,270,365,730,"Rating","n_Children", "grp")
+  
+  behaviorTitration$JB1 <- TRUE
+  behaviorTitration$JB2 <- TRUE
+  
+  for (id in unique(behaviorTitration$id)) {
+    for (num in 3:10) {
+      prev = behaviorTitration[behaviorTitration$id == id, num - 1]
+      curr = behaviorTitration[behaviorTitration$id == id, num]
+      
+      if ((curr - prev) > jbCriteria) {
+        behaviorTitration[behaviorTitration$id == id, "JB1"] <- FALSE
+      }
+    }
+  }
+
+  behaviorTitration[behaviorTitration$id == id, "JB2"] <- behaviorTitration[behaviorTitration$id == id, 2] <=
+    behaviorTitration[behaviorTitration$id == id, 10]
+
+  behaviorTitration.long <- filter(behaviorTitration, JB1 == TRUE & JB2 == TRUE) %>%
+    select(-c(JB1, JB2)) %>%
+    gather(Delay, Indifference, colnames(behaviorTitration)[2:10], factor_key=TRUE) %>%
+    mutate(Delay = as.numeric(as.character(Delay))) %>%
+    mutate(Indifference = as.numeric(Indifference)) %>%
+    as.data.frame()
+  
+  nBehaviorSystematic <- filter(behaviorTitration, JB1 == TRUE & JB2 == TRUE) %>%
+    do(data.frame(nrow=nrow(.)))
+  
+combFrame <- rbind(moneyTitration, behaviorTitration)
+
+totalFrame <- combFrame %>% 
+  group_by(id) %>% 
+  filter(JB1 == TRUE & JB2 == TRUE) %>%
+  filter(n()>1) %>%
+  arrange(desc(id))
+}
+
+```
+### Research Questions
+
+RQ1: To what degree does the rate of discounting for behavioral outcomes differ from monetary outcomes at the individual-level?
+
+RQ2: To what degree do other demographic variables (e.g., number of reported children, level of challenging behavior) correlate with the discounting of behavioral outcomes?
+
+Sample Size: **61 parents**, per G*Power using results the results of logit-tranformed Log10-scaled AUC from Call, Reavis et al., (2015)
+
+### Survey Data
+
+From the **`r nrow(mSurveyRes)`** available parent responses, **`r length(unique(totalFrame$id))`** parents met the Johnson & Bickel criteria for systematic responding in the monetary AND behavioral outcomes tasks (**`r round((length(unique(totalFrame$id))/nrow(mSurveyRes))* 100, 2)`%** of all data).
+
+### Indifference Point Data: Box Plots by Delay across Types
+
+Responses below are a visualization of the data at each of the delays sampled. This is absent any model fitting and entirely as a visual check for overall patterns of data. 
+
+
+```{r indifferenceDistribution, cache=TRUE, echo=FALSE, fig.align="center", fig.height=3.5, fig.width=9}
+
+par(mfrow=c(1,2))
+
+boxplot(Indifference~Delay,
+        data=moneyTitration.long, 
+        main="Monetary Outcomes", 
+        col=moneyColor,
+        xlab="Delays", 
+        ylab="Value")
+
+boxplot(Indifference~Delay,
+        data=behaviorTitration.long, 
+        main="Behavior Outcomes", 
+        col=behaviorColor,
+        xlab="Delays", 
+        ylab="Value")
+
+```
+
+### Indifference Point Data: Mean and Medians by Delay across Types
+
+Indifference point data is often skewed by outliers near the ceiling/floor--the table below illustrates the average and median preference across delays and type.
+
+```{r table, echo=FALSE, warning=FALSE, cache=TRUE, results="asis"}
+
+moneyFrame <- moneyTitration.long %>% 
+  group_by(Delay) %>% 
+  mutate(IndiffAveMoney = mean(Indifference)) %>%
+  mutate(IndiffMdnMoney = median(Indifference)) %>%
+  distinct(Delay, IndiffAveMoney, IndiffMdnMoney)
+
+behaviorFrame <- behaviorTitration.long %>% 
+  group_by(Delay) %>% 
+  mutate(IndiffAveBehavior = mean(Indifference)) %>%
+  mutate(IndiffMdnBehavior = median(Indifference)) %>%
+  distinct(Delay, IndiffAveBehavior, IndiffMdnBehavior)
+
+combinedFrame <- bind_cols(moneyFrame, behaviorFrame[,2:3]) %>%
+  rename(Outcome.Ave.Monetary = IndiffAveMoney) %>%
+  rename(Outcome.Mdn.Monetary = IndiffMdnMoney) %>%
+  rename(Outcome.Ave.Behavioral = IndiffAveBehavior) %>%
+  rename(Outcome.Mdn.Behavioral = IndiffMdnBehavior)
+
+kable(as.data.frame(combinedFrame))
+```
+
+### Model Comparisons
+
+A total of four discounting models were included in the model comparison. These included the **Hyperbolic**, **Green-Myerson**, **Rachlin**, and **Ebert-Prelec** models.
+
+All models are fitting using MLE, using nlme, with rate parameters (and scaling constants) as fixed effects and random effects clustered at the individual level. Unless noted otherwise, starting parameters are provided as the results from simple least squares error fitting at the group-level.
+
+``` {r modelComp, cache=TRUE, echo=FALSE, results="asis", warning=TRUE}
+
+totalTitration.long <- totalFrame %>%
+  gather(Delay, Indifference, colnames(behaviorTitration)[2:10], factor_key=TRUE) %>%
+  mutate(Delay = as.numeric(as.character(Delay))) %>%
+  mutate(Indifference = as.numeric(Indifference)) %>%
+  as.data.frame()
+
+toWrite <- totalTitration.long %>%
+  rename(Subject = id) %>%
+  rename(Group = grp) %>%
+  rename(nChildren = n_Children)
+
+participants <- unique(toWrite$Subject)
+
+mFinalSave <- mSurveyRes %>%
+  filter(ResponseID %in% participants)
+
+indifferenceDataFrame <- toWrite
+
+indifferenceDataFrame$uniqueId <- paste(indifferenceDataFrame$Subject, indifferenceDataFrame$Group, sep = ".")
+
+indifferenceDataFrame <- transform(indifferenceDataFrame,uniqueId=as.numeric(factor(uniqueId)))
+indifferenceDataFrame$Group <- as.factor(indifferenceDataFrame$Group)
+
+idDataFrame <- data.frame(Subject = unique(indifferenceDataFrame$Subject))
+idDataFrame$SubjectId <- 1:nrow(idDataFrame)
+
+indifferenceDataFrame <- left_join(indifferenceDataFrame, idDataFrame, by = "Subject")
+
+```
+
+#### Hyperbolic Model
+
+Model Summary below:
+
+``` {r model.1, warning=FALSE, echo=FALSE}
+### Model 1 - Mazur
+
+prefit <- nls(Indifference ~ 100/(1+exp(logk)*Delay), data=indifferenceDataFrame, start = c(logk = -6))
+model1.hyp <- nlme(Indifference ~ 100/(1+exp(logk)*Delay), 
+                   fixed=logk~1,
+                   random=logk~1|uniqueId, 
+                   data=indifferenceDataFrame, 
+                   start=coef(prefit), control=nlmeControl(tol=0.75))
+summary(model1.hyp)
+
+```
+
+#### Green-Myerson Model
+
+Model Summary below:
+
+``` {r model.2, warning=FALSE, echo=FALSE}
+### Model 2 - GM
+
+prefit <- nls(Indifference ~ 100/(1+exp(logk)*Delay)^s, data=indifferenceDataFrame, start = c(logk = -6, s = 1))
+model2.gm <- nlme(Indifference ~ 100/(1+exp(logk)*Delay)^s, 
+                  fixed=logk+s~1,
+                  random=logk+s~1|uniqueId, 
+                  data=indifferenceDataFrame,
+                  start=coef(prefit),control=nlmeControl(tol=0.75))
+summary(model2.gm)
+
+```
+
+#### Rachlin Model
+
+Model Summary below:
+
+``` {r model.3, warning=FALSE, echo=FALSE}
+### Model 3 - Rachlin
+
+prefit <- nls(Indifference ~ 100/(1+exp(logk)*Delay^s), data=indifferenceDataFrame, start = c(logk = -6, s = 1))
+model3.rach <- nlme(Indifference ~ 100/(1+exp(logk)*Delay^s), 
+                    fixed=logk+s~1,
+                    random=logk+s~1|uniqueId, 
+                    data=indifferenceDataFrame,
+                    start=coef(prefit),
+                    control=nlmeControl(tol=0.5, maxIter = 500))
+summary(model3.rach)
+
+```
+
+#### Ebert-Prelec Model
+
+Model Summary below:
+
+``` {r model.4, warning=FALSE, echo=FALSE}
+### Model 4 - Ebert-Prelec
+
+prefit <- nls(Indifference ~ 100 * exp(-(exp(logk)*Delay)^s), data=indifferenceDataFrame, start = c(logk = -6, s = 1))
+
+model4.ep <- nlme(Indifference ~ 100 * exp(-(exp(logk)*Delay)^s),
+                  fixed=logk+s~1, 
+                  random=logk+s~1|uniqueId,
+                  data=indifferenceDataFrame, 
+                  start=coef(prefit), 
+                  control=nlmeControl(tol=0.5, maxIter = 500))
+summary(model4.ep)
+```
+
+#### Model Comparison (AIC)
+
+The four models are compared below, with the **Rachlin** model performing better than the others.
+
+``` {r modelCompAIC, warning=FALSE, echo=FALSE}
+### Model Comparisons - Rachlin wins
+
+AIC(model1.hyp,
+    model2.gm,
+    model3.rach,
+    model4.ep)
+```
+
+### Summary Metrics
+
+The best performing model (**Rachlin's Hyperboloid**) contains two parameters that jointly represent individual discounting and so a summary value was needed because individual parameters comparison (i.e., there were more than one parameter involved and were highly correlated with one another).
+
+The results from individual Kolgomorov-Smirnoff Tests are included in each plot.
+
+``` {r summaryMetric.pre, warning=FALSE, echo=FALSE}
+
+results <- coef(model3.rach, augFrame = TRUE) %>%
+  select(-c(Delay, Indifference))
+
+maxArea <- (log10(730) - log10(7)) * 100
+maxAreaOld <- (730 - 7) * 100
+
+integrandRachlin    <- function(x, lnK, s) { 100/(1+exp(lnK)*(x^s)) }
+integrandRachlinLog <- function(x, lnK, s) { 100/(1+exp(lnK)*((10^x)^s)) }
+
+results$MBAUC <- NA
+results$MBAUC.old <- NA
+
+for (i in 1:nrow(results)) {
+  results[i,]$MBAUC <- stats::integrate(integrandRachlinLog,
+                                        lower = log10(7),
+                                        upper = log10(730),
+                                        lnK = results$logk[i],
+                                        s = results$s[i])$value/maxArea
+  results[i,]$MBAUC.old <-stats::integrate(integrandRachlin,
+                                        lower = 7,
+                                        upper = 730,
+                                        lnK = results$logk[i],
+                                        s = results$s[i])$value/maxAreaOld
+  
+}
+
+results <- results %>%
+  mutate(MBAUC.trans = log (MBAUC / (1 - MBAUC)))
+
+results.M <- subset(results, Group == 0)
+results.B <- subset(results, Group == 1)
+```
+
+#### Summary Metrics: Distribution
+
+Area-based interpretations are provided below in (LTR) normal, log base 10 scaled, and logit transformed log base 10 scaled MB-AUC.
+
+``` {r summaryMetric.distrib, fig.align="center", fig.height=3.5, fig.width=9, warning=FALSE, echo=FALSE}
+
+cexSize <- 1.5
+signif <- 4
+par(mfrow=c(1,3))
+
+res <- ks.test(results.M$MBAUC.old, results.B$MBAUC.old, alternative = c("two.sided"), exact = FALSE)
+sub <- paste("K-S Test (D = ", round(res$statistic, signif), ", p = ", round(res$p.value, signif), ")", sep = "")
+
+p1 <- density(results.B$MBAUC.old)
+p2 <- density(results.M$MBAUC.old)
+plot(p1,
+     #col=rgb(0,0,0,1/4),
+     main = "MB-AUC Measures",
+     sub = sub,
+     col = behaviorColorTrans,
+     cex = cexSize,
+     cex.lab = cexSize,
+     cex.axis = cexSize,
+     cex.main = cexSize,
+     ylim = c(0, 2),
+     xlab = "MB-AUC")
+polygon(p1,
+        col=behaviorColorTrans,
+        border="black")
+lines(p2, col=moneyColorTrans)
+polygon(p2, col=moneyColorTrans, border="black")
+
+res2 <- ks.test(results.M$MBAUC, results.B$MBAUC, alternative = c("two.sided"), exact = FALSE)
+sub2 <- paste("K-S Test (D = ", round(res2$statistic, signif), ", p = ", round(res2$p.value, signif), ")", sep = "")
+
+p1 <- density(results.B$MBAUC)
+p2 <- density(results.M$MBAUC)
+plot(p1,
+     col=behaviorColorTrans,
+     main = "Log Scaled MB-AUC Outcomes",
+     sub = sub2,
+     cex = cexSize,
+     cex.lab = cexSize,
+     cex.axis = cexSize,
+     cex.main = cexSize,
+     ylim = c(0, 2),
+     ylab = "",
+     xlab = "MB-AUC(Log10 Scale)")
+polygon(p1,
+        col=behaviorColorTrans,
+        border="black")
+lines(p2, col=moneyColorTrans)
+polygon(p2, col=moneyColorTrans, border="black")
+
+res3 <- ks.test(results.M$MBAUC.trans, results.B$MBAUC.trans, alternative = c("two.sided"), exact = FALSE)
+sub3 <- paste("K-S Test (D = ", round(res3$statistic, signif), ", p = ", round(res3$p.value, signif), ")", sep = "")
+
+p3 <- density(results.B$MBAUC.trans)
+p4 <- density(results.M$MBAUC.trans)
+plot(p3,  col=behaviorColorTrans, 
+     xlim=c(-6,6),
+     main = "Transformed MB-AUC",
+     sub = sub3,
+     cex = cexSize,
+     cex.lab = cexSize,
+     cex.axis = cexSize,
+     cex.main = cexSize,
+     ylim = c(0, 0.4),
+     ylab = "",
+     xlab = "Transformed MB-AUC(Log10 Scale)")
+polygon(p3, col=behaviorColorTrans, border="black")
+lines(p4, col=moneyColorTrans)
+polygon(p4, col=moneyColorTrans, border="black")
+
+legend("topright", 
+       legend=c("Behavioral", "Monetary"),
+       col=c(behaviorColor, moneyColor), 
+       lty=c(1, 1), 
+       cex=1)
+```
+
+#### Summary Metrics: Logit Transformed MB-AUC 
+
+``` {r summaryMetric.heterosched, echo=FALSE}
+
+levenesDataForm <- data.frame(Group=as.factor(c(rep(1, length(results.M$MBAUC.trans)), rep(2, length(results.B$MBAUC.trans)))),
+                              Measure=c(results.M$MBAUC.trans, results.B$MBAUC.trans))   
+
+leveneTest(Measure~Group, levenesDataForm)
+
+```
+
+Passing Levene's test, t-tests were run with variances assumed to be equal.
+
+``` {r summaryMetric.ttest, echo=FALSE}
+
+# Two sample T test
+tTestRes <- t.test(results.M$MBAUC.trans, results.B$MBAUC.trans, var.equal = TRUE)
+print(tTestRes)
+
+```
+
+A summary of transformed MB-AUC, across groups, is provided below:
+
+``` {r summarizeMBAUC, echo=FALSE}
+
+summaryFrame <- results %>% 
+  mutate(Group = ifelse(Group == 0, "Monetary", "Behavioral")) %>%
+  group_by(Group) %>%
+  summarise(Q1=quantile(MBAUC.trans, probs=0.25),
+            Q2=quantile(MBAUC.trans, probs=0.5),
+            Q3=quantile(MBAUC.trans, probs=0.75),
+            Mean=mean(MBAUC.trans),
+            Sd=sd(MBAUC.trans))
+kable(summaryFrame)
+```
+
+#### Relationships
+
+``` {r corrs, echo=FALSE}
+
+mQuery <- mSurveyRes %>%
+  filter(ResponseID %in% results.B$Subject)
+
+mJoinedFrame <- merge(results.B, mQuery, by.x = "Subject", by.y = "ResponseID") %>%
+  select(Subject, MBAUC.trans, rateBehavior, n_Children, EducationLevel, AnnualIncome, YearOfBirth) %>%
+  mutate(EducationLevel = case_when(
+    EducationLevel == "Bachelor's degree in college (4-year)" ~ 4,
+    EducationLevel == "Associate degree in college (2-year)"  ~ 3,
+    EducationLevel == "Some college but no degree" ~ 2,
+    EducationLevel == "High school graduate (high school diploma or equivalent including GED)" ~ 1,
+    EducationLevel == "Professional degree (JD, MD)" ~ 6,
+    EducationLevel == "Master's degree" ~ 5,
+    TRUE ~ 0
+  )) %>%
+  
+  # Convert severity into rating scale
+  mutate(rateBehavior = case_when(
+    rateBehavior == "A little (e.g. I have to repeat myself for my child to follow instructions)" ~ 1,
+    rateBehavior == "A moderate amount (e.g. My child does not listen to instructions)"  ~ 2,
+    rateBehavior == "A lot (e.g. My child throws tantrums when I ask him/her to follow instructions)" ~ 3,
+    rateBehavior == "A great deal (e.g. My child engages in harmful behaviors such as hitting or kicking)" ~ 4,
+    TRUE ~ 0
+  )) %>%
+  mutate(Age = 2018 - YearOfBirth) %>%
+  select(-c(Subject, YearOfBirth)) %>%
+  rename(RateBehavior = rateBehavior) %>%
+  rename(ChildCount = n_Children)
+
+
+nLength <- 4
+mDispFrame <- data.frame(Comparison = rep(NA, nLength),
+                         Method     = rep(NA, nLength),
+                         Statistic  = rep(NA, nLength),
+                         Df  = rep(NA, nLength),
+                         Estimate  = rep(NA, nLength),
+                         PValue     = rep(NA, nLength))
+
+corObj <- cor.test(mJoinedFrame$MBAUC.trans, mJoinedFrame$ChildCount, method = "pearson", use = "complete.obs")
+  mDispFrame[1, "Comparison"]  <- "Child Count"
+  mDispFrame[1, "Method"]      <- "Pearson"
+  mDispFrame[1, "Statistic"]   <- corObj$statistic
+  mDispFrame[1, "Df"]          <- corObj$parameter
+  mDispFrame[1, "Estimate"]    <- unname(corObj$estimate)
+  mDispFrame[1, "PValue"]      <- unname(corObj$p.value)
+
+corObj <- cor.test(mJoinedFrame$MBAUC.trans, mJoinedFrame$Age, method = "pearson", use = "complete.obs")
+  mDispFrame[2, "Comparison"]  <- "Age"
+  mDispFrame[2, "Method"]      <- "Pearson"
+  mDispFrame[2, "Statistic"]   <- corObj$statistic
+  mDispFrame[2, "Df"]          <- corObj$parameter
+  mDispFrame[2, "Estimate"]    <- unname(corObj$estimate)
+  mDispFrame[2, "PValue"]      <- unname(corObj$p.value)  
+corObj <- cor.test(mJoinedFrame$MBAUC.trans, mJoinedFrame$RateBehavior, 
+                   method = "spearman", use = "complete.obs", exact = FALSE)
+  mDispFrame[3, "Comparison"]  <- "Behavior Rating"
+  mDispFrame[3, "Method"]      <- "Spearman"
+  mDispFrame[3, "Statistic"]   <- corObj$statistic
+  mDispFrame[3, "Df"]          <- ""
+  mDispFrame[3, "Estimate"]    <- unname(corObj$estimate)
+  mDispFrame[3, "PValue"]      <- unname(corObj$p.value)    
+corObj <- cor.test(mJoinedFrame$MBAUC.trans, mJoinedFrame$EducationLevel, 
+                   method = "spearman", use = "complete.obs", exact = FALSE)
+  mDispFrame[4, "Comparison"]  <- "Education Level"
+  mDispFrame[4, "Method"]      <- "Spearman"
+  mDispFrame[4, "Statistic"]   <- corObj$statistic
+  mDispFrame[4, "Df"]          <- ""
+  mDispFrame[4, "Estimate"]    <- unname(corObj$estimate)
+  mDispFrame[4, "PValue"]      <- unname(corObj$p.value)  
+
+kable(mDispFrame)
+
+```
+
+### Figures 
+
+#### Aggregate Discounting across Type
+
+``` {r figure1, echo=FALSE, fig.align="center", fig.height=3.5, fig.width=9}
+indifferenceDataFrame$Tag <- paste("S", 
+                                   1:nrow(idDataFrame), 
+                                   sep = "")
+
+indifferenceDataFrame$logk <- NA
+indifferenceDataFrame$s    <- NA
+
+for (i in 1:nrow(indifferenceDataFrame)) {
+  indifferenceDataFrame[i, "logk"] <- results[results$Subject == indifferenceDataFrame[i, "Subject"] &
+                                                results$Group == indifferenceDataFrame[i, "Group"], "logk"]
+  indifferenceDataFrame[i, "s"]    <- results[results$Subject == indifferenceDataFrame[i, "Subject"] &
+                                                results$Group == indifferenceDataFrame[i, "Group"], "s"]
+}
+
+cut.M <- subset(indifferenceDataFrame, Group == 0)
+
+cut.B <- subset(indifferenceDataFrame, Group == 1)
+cutBCols <- colnames(cut.B)
+cutBCols <- paste(cutBCols, "Grp1", sep = ".")
+colnames(cut.B) <- cutBCols
+
+plotIndiffDf <- merge(cut.M, cut.B, by.x = "Subject", by.y = "Subject.Grp1", all = TRUE)
+
+my.settings <- list(
+  strip.background=list(col="grey"),
+  strip.border=list(col="black")
+)
+
+p1 <- xyplot(fitted(model3.rach) ~ Delay,
+       data=indifferenceDataFrame,
+       ylim = c(-20, 120),
+       xlim = c(1, 1250),
+       col = c(moneyColor, behaviorColor),
+       ylab = "Value",
+       xlab = "Delays (Log Scaled)",
+       type=c("a", "a"),
+       scales=list(x = list(log = TRUE)),
+       par.settings = list(superpose.line = list(lwd=2)),
+       grid = FALSE,
+       groups = as.factor(Group),
+       key = list(corner=c(0.95,0.95),
+                  lines = list(col=c(moneyColor, behaviorColor), 
+                               lwd=2),
+                  text = list(c("Monetary Outcome", "Behavioral Outcome"))
+       ),
+       distribute.type=TRUE)
+
+p2 <- xyplot(fitted(model3.rach) ~ Delay,
+       data=indifferenceDataFrame,
+       ylim = c(-20, 120),
+       xlim = c(1, 750),
+       col = c(moneyColor, behaviorColor),
+       ylab = "Value",
+       xlab = "Delays (Natural Scale)",
+       type=c("a", "a"),
+       par.settings = list(superpose.line = list(lwd=2)),
+       grid = FALSE,
+       groups = as.factor(Group),
+       key = list(corner=c(0.95,0.95),
+                  lines = list(col=c(moneyColor, behaviorColor), 
+                               lwd=2),
+                  text = list(c("Monetary Outcome", "Behavioral Outcome"))
+       ),
+       distribute.type=TRUE)
+
+grid.arrange(p1,p2, ncol=2)
+
+```
+
+#### Individual Discounting across Type
+
+``` {r figure2, echo=FALSE, fig.align="center", fig.height=8, fig.width=12}
+
+p1 <- xyplot((100/(1+exp(logk)*Delay^s)) + Indifference ~ Delay | as.factor(SubjectId),
+#p1 <- xyplot(100*exp(-(exp(logk)*Delay)^s) + Indifference ~ Delay | as.factor(SubjectId),
+       data=plotIndiffDf,
+       ylim = c(-20, 120),
+       ylab = list(
+         label = "Value",
+         cex = cexSize
+       ),
+       xlab = list(
+         label = "Delay",
+         cex = cexSize
+       ),
+       type = c("a", "p"),
+       col.line = moneyColor,
+       col = "black",
+       fill = moneyColor,
+       pch = 21,
+       layout = c(11,6),
+       grid = FALSE,
+       scales=list(x = list(log = TRUE, 
+                            rot=90)),
+       par.settings = list(superpose.line = list(lwd=2)),
+       key=list(corner=c(1,1),
+                lines=list(col=c(moneyColor,behaviorColor), 
+                           lty=c(1,1), 
+                           lwd=2),
+                text=list(c("Monetary Outcome","Behavioral Outcome"))
+       ),
+       strip = strip.custom(factor.levels = indifferenceDataFrame$Tag, bg = "grey"),
+       distribute.type=TRUE)
+
+p2 <- xyplot((100/(1+exp(logk.Grp1)*Delay.Grp1^s.Grp1)) + Indifference.Grp1 ~ Delay.Grp1 | as.factor(SubjectId),
+#p2 <- xyplot(100*exp(-(exp(logk.Grp1)*Delay.Grp1)^s.Grp1) + Indifference.Grp1 ~ Delay.Grp1 | as.factor(SubjectId),
+       data=plotIndiffDf,
+       ylim = c(-20, 120),
+       type=c("a", "p"),
+       col.line = behaviorColor,
+       col = "black",
+       fill = behaviorColor,
+       pch = 24,
+       grid = FALSE,
+       scales=list(x = list(log = TRUE, 
+                            rot=90)),
+       par.settings = list(superpose.line = list(lwd=2)),
+       strip = strip.custom(bg = "grey"),
+       distribute.type=TRUE)
+
+final <- p1 + as.layer(p2)
+
+final
+
+```
+
+#### Final Aggregate Indifference Data and MB-AUC across Type
+
+``` {r figure3, echo=FALSE, fig.align="center", fig.height=3.75, fig.width=9}
+
+par(mfrow= c(1,3))
+cexSize <- 1.5
+
+moneySummary <- moneyTitration.long %>%
+  group_by(Delay) %>%
+  summarise(MedianMoney = median(Indifference),
+            MedianQ1 = quantile(Indifference, probs = c(0.25)),
+            MedianQ3 = quantile(Indifference, probs = c(0.75)))
+
+bxSummary <- behaviorTitration.long %>%
+  group_by(Delay) %>%
+  summarise(MedianBx = median(Indifference),
+            MedianQ1 = quantile(Indifference, probs = c(0.25)),
+            MedianQ3 = quantile(Indifference, probs = c(0.75)))
+
+plot(moneySummary$Delay, moneySummary$MedianMoney,
+     main = "Monetary Outcomes",
+     log = "x",
+     pch = 21,
+     col = "black",
+     bg = moneyColor,
+     ylab = "Indifference Points",
+     xlab = "Delay",
+     cex = cexSize,
+     cex.lab = cexSize,
+     cex.axis = cexSize,
+     cex.main = cexSize,
+     xaxt="n",
+     xlim = c(1, 1000),
+     ylim = c(-10, 110))
+
+prefit <- nls(MedianMoney ~ 100/(1+exp(logk)*Delay^s), data=moneySummary, start = c(logk = -6, s = 1))
+xPlot <- seq(7, 1000, length.out = 1000)
+yPlot <- 100/(1+exp(unname(coef(prefit)["logk"]))*xPlot^unname(coef(prefit)["s"]))
+
+lines(xPlot, yPlot, col = moneyColor)
+
+arrows(moneySummary$Delay, moneySummary$MedianQ1, 
+       moneySummary$Delay, moneySummary$MedianQ3, 
+       length=0.05, 
+       angle=90, 
+       code=3,
+       col = "black")
+
+ticks <- -1:3
+tickLabel=parse(text=paste("10^ ", -1:3, sep=""))
+axis(1,at=10^ticks,labels=tickLabel, cex.axis = cexSize)
+
+plot(bxSummary$Delay, bxSummary$MedianBx,
+     main = "Behavioral Outcomes",
+     log = "x",
+     pch = 24,
+     col = "black",
+     bg = behaviorColor,
+     xaxt="n",
+     xlab = "Delay",
+     ylab = "",
+     cex = cexSize,
+     cex.lab = cexSize,
+     cex.axis = cexSize,
+     cex.main = cexSize,
+     xlim = c(1, 1000),
+     ylim = c(-10, 110))
+
+prefit <- nls(MedianBx ~ 100/(1+exp(logk)*Delay^s), data=bxSummary, start = c(logk = -6, s = 1))
+yPlot <- 100/(1+exp(unname(coef(prefit)["logk"]))*xPlot^unname(coef(prefit)["s"]))
+
+lines(xPlot, yPlot, col = behaviorColor)
+
+arrows(bxSummary$Delay, bxSummary$MedianQ1, 
+       bxSummary$Delay, bxSummary$MedianQ3, 
+       length=0.05, 
+       angle=90, 
+       col = "black",
+       code=3)
+
+axis(1,at=10^ticks,labels=tickLabel, cex.axis = cexSize)
+
+results <- results %>%
+  mutate(GroupName = ifelse(Group == 0, "Monetary", "Behavioral"))
+
+boxplot(MBAUC.trans~GroupName,
+        data=results, 
+        ylim = c(-6, 6),
+        cex = cexSize,
+        cex.lab = cexSize,
+        cex.axis = cexSize,
+        cex.main = cexSize,
+        col=c(behaviorColor, moneyColor),
+        main="Discounting across Rewards",
+        xlab="Outcome Type", 
+        ylab="Transformed MB-AUC")
+
+```
+
+### Tables
+
+``` {r demographics1, echo=FALSE, warning=FALSE, cache=FALSE, results="asis"}
+
+participants <- unique(toWrite$Subject)
+
+mFinalSave <- mSurveyRes %>%
+  filter(ResponseID %in% participants)
+
+demographicFrame <- mFinalSave
+
+demographicFrame <- demographicFrame %>%
+  mutate(Age = 2018 - YearOfBirth) %>%
+  rename(RatingBehavior = rateBehavior)
+
+#demographicFrame$Age <- 2018 - demographicFrame$YearOfBirth
+
+# Race
+kable(demographicFrame %>%
+  group_by(Race) %>%
+  summarise(Percentage = n(),
+            n=n()) %>%
+  mutate(Percentage = round(((Percentage / sum(Percentage)) * 100), 2)), caption = "")
+
+# Sex
+kable(demographicFrame %>%
+  group_by(Sex) %>%
+  summarise(Percentage = n(),
+            n=n()) %>%
+  mutate(Percentage = round(((Percentage / sum(Percentage)) * 100), 2)), caption = "")
+
+# Marital Status
+kable(demographicFrame %>%
+  group_by(MaritalStatus) %>%
+  summarise(Percentage = n(),
+            n=n()) %>%
+  mutate(Percentage = round(((Percentage / sum(Percentage)) * 100), 2)), caption = "")
+
+# Rating of Behavior
+kable(demographicFrame %>%
+  group_by(RatingBehavior) %>%
+  summarise(Percentage = n(),
+            n=n()) %>%
+  mutate(Percentage = round(((Percentage / sum(Percentage)) * 100), 2)), caption = "")
+
+# Education Level
+kable(demographicFrame %>%
+  group_by(EducationLevel) %>%
+  summarise(Percentage = n(),
+            n=n()) %>%
+  mutate(Percentage = round(((Percentage / sum(Percentage)) * 100), 2)), caption = "")
+
+# Age
+ageFrame <- demographicFrame %>%
+  filter(!is.na(Age)) %>%
+  summarise(Q1=quantile(Age, probs=0.25),
+            Q2=quantile(Age, probs=0.5),
+            Q3=quantile(Age, probs=0.75),
+            Avg=mean(Age),
+            Sd=sd(Age),
+            n=n())%>%
+  mutate(Type = "Reported Age")
+
+# Annual Income
+incomeFrame <- demographicFrame %>%
+  filter(!is.na(AnnualIncome)) %>%
+  filter(AnnualIncome < incomeCap) %>%
+  summarise(Q1=quantile(AnnualIncome, probs=0.25),
+            Q2=quantile(AnnualIncome, probs=0.5),
+            Q3=quantile(AnnualIncome, probs=0.75),
+            Avg=mean(AnnualIncome),
+            Sd=sd(AnnualIncome),
+            n=n()) %>%
+  mutate(Type = "Reported Annual Income")
+
+# Number of Children
+nChildrenFrame <- demographicFrame %>%
+  filter(!is.na(n_Children)) %>%
+  summarise(Q1=quantile(n_Children, probs=0.25),
+            Q2=quantile(n_Children, probs=0.5),
+            Q3=quantile(n_Children, probs=0.75),
+            Avg=mean(n_Children),
+            Sd=sd(n_Children),
+            n=n()) %>%
+  mutate(Type = "Reported Number Children")
+
+combinedDemoFrame <- rbind(nChildrenFrame, ageFrame, incomeFrame) %>%
+  select(Type, everything())
+
+kable(combinedDemoFrame)
+```
